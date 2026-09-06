@@ -1,0 +1,45 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env: { POSTGRES_USER: gateway, POSTGRES_PASSWORD: gateway, POSTGRES_DB: gateway }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gateway" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://gateway:gateway@localhost:5432/gateway
+      REDIS_URL: redis://localhost:6379/0
+      ADMIN_KEY: ci-test-admin-key
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: inference-gateway }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/aikit", path: aikit }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      # Order matters: this project's deps first (pulls aikit from its
+      # pinned tag), then aikit editable from the freshly checked-out
+      # working copy LAST, so this job actually tests aikit@main - the
+      # reverse order would silently re-pin aikit back to the tagged
+      # release and defeat the point of checking out main at all.
+      - run: pip install -e "./inference-gateway[dev]"
+      - run: pip install -e "./aikit[gateway]"
+      - working-directory: inference-gateway
+        run: ruff check .
+      - working-directory: inference-gateway
+        run: mypy src
+      - working-directory: inference-gateway
+        run: alembic upgrade head
+      - working-directory: inference-gateway
+        run: pytest -q
