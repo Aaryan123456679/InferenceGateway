@@ -60,7 +60,14 @@ def create_app(settings: GatewaySettings | None = None) -> FastAPI:
                 backend, ollama_host=settings.ollama_host, hosted_api_key=settings.hosted_api_key
             ),
         )
-        await registry.reload()
+        try:
+            await registry.reload()
+        except Exception as exc:  # noqa: BLE001 - e.g. migrations not applied yet
+            # Graceful degradation (HLD A.6): the gateway still starts with
+            # an empty registry rather than refusing to boot at all. Chat
+            # completions 503 with NoBackendsAvailable until either the
+            # schema catches up or an admin POST /admin/backends reloads it.
+            log.warning("initial_registry_reload_failed", error=str(exc))
 
         l1 = ExactCache(redis, ttl_seconds=settings.cache_ttl_seconds)
         l2 = SemanticCache(
