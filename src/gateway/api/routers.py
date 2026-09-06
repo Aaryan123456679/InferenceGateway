@@ -7,6 +7,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 
+from aikit.db import session_scope
 from aikit.model_client import ChatMessage
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
@@ -159,20 +160,24 @@ async def list_models(repo: BackendRepo = Depends(get_backend_repo)) -> ModelLis
 
 
 @admin_router.post("/backends", response_model=BackendOut, status_code=status.HTTP_201_CREATED)
-async def upsert_backend(
-    body: BackendUpsertRequest,
-    request: Request,
-    repo: BackendRepo = Depends(get_backend_repo),
-) -> BackendOut:
-    backend = await repo.upsert(
-        name=body.name,
-        type=BackendType(body.type),
-        endpoint=body.endpoint,
-        model=body.model,
-        priority=body.priority,
-        cost_per_1k_in=body.cost_per_1k_in,
-        cost_per_1k_out=body.cost_per_1k_out,
-    )
+async def upsert_backend(body: BackendUpsertRequest, request: Request) -> BackendOut:
+    # Deliberately not Depends(get_backend_repo): that dependency's
+    # transaction only commits during FastAPI's post-handler cleanup, which
+    # runs *after* this function returns. reload() opens its own session to
+    # read the backend table, and under READ COMMITTED it can't see a row
+    # that isn't committed yet - it would silently reload without the very
+    # backend this call just wrote. Scoping the transaction explicitly here
+    # guarantees it's committed before reload() ever runs.
+    async with session_scope(request.app.state.sessionmaker) as session:
+        backend = await BackendRepo(session).upsert(
+            name=body.name,
+            type=BackendType(body.type),
+            endpoint=body.endpoint,
+            model=body.model,
+            priority=body.priority,
+            cost_per_1k_in=body.cost_per_1k_in,
+            cost_per_1k_out=body.cost_per_1k_out,
+        )
     await request.app.state.registry.reload()
     return BackendOut(
         id=backend.id, name=backend.name, type=backend.type.value, endpoint=backend.endpoint,
