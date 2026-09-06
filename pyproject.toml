@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "inference-gateway"
+version = "0.1.0"
+description = "OpenAI-compatible proxy over N backends: semantic caching, policy routing, circuit breakers, token-budget rate limiting."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+dependencies = [
+    # Pinned to aikit's v0.2.0 tag (the stream Usage contract this project
+    # needs), with the `gateway` extra (db+redis+observability+http+
+    # embeddings — no `queue`/arq, the gateway never uses jobqueue). Local
+    # dev overrides with an editable install of ../aikit - install THIS
+    # project's deps first, aikit editable LAST (see Makefile): pip always
+    # re-resolves a direct-URL dependency, so whichever install runs last
+    # wins.
+    "aikit[gateway] @ git+https://github.com/Aaryan123456679/aikit@v0.2.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "alembic>=1.13",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "aiosqlite>=0.20",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gateway"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# B008: FastAPI's DI idiom is `param: T = Depends(...)` in a signature default.
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
