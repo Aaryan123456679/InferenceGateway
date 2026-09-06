@@ -54,7 +54,7 @@ def _to_chat_messages(body: ChatCompletionRequest) -> list[ChatMessage]:
     return [ChatMessage(role=m.role, content=m.content) for m in body.messages]
 
 
-@router.post("/v1/chat/completions")
+@router.post("/v1/chat/completions", response_model=None)
 async def chat_completions(
     body: ChatCompletionRequest,
     api_key: ApiKey = Depends(require_api_key),
