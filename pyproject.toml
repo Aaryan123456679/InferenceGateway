@@ -53,3 +53,11 @@ ignore = ["B008"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+# redis-py's async return-type stubs have changed precision across
+# versions (imprecise Awaitable[T]|T in some, exact Awaitable[T] in
+# others); a `cast(Awaitable[T], ...)` is correct either way but reads as
+# "redundant" under whichever version happens to already be precise. Since
+# a version-pinned `# type: ignore` failed for the opposite reason (CI
+# resolving a different redis-py than this machine, see latency_tracker.py
+# history), disable this one check rather than chase stub churn.
+warn_redundant_casts = false
