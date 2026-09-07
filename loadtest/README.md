@@ -1,15 +1,40 @@
 # Gateway load test
 
-Two `make` commands give the causal number: how much of the gateway's
-latency the two-tier cache actually removes, under the same traffic.
+Two separate questions, two separate tests. Raw results and a script that
+derives every number from them (not hand-typed) live in
+[`results/`](results/) - run `python3 summarize.py` to regenerate.
+
+## 1. Does the cache reduce latency?
 
 ```bash
 make load-baseline   # cache OFF (x-cache: no-store) - the control
 make load             # cache ON
 ```
 
-Each prints an aggregated p95 (ms) and a cache hit-rate over its own
-window. The reduction is `(p95_baseline - p95_cache) / p95_baseline`.
+Same traffic, run twice. Each prints an aggregated p95 (ms) and a cache
+hit-rate over its own window; the reduction is `(p95_baseline - p95_cache)
+/ p95_baseline`.
+
+## 2. Was the gateway itself tested under real concurrency?
+
+The answer to #1 is only as strong as its concurrency is real - and a
+single small model on one CPU-only Ollama instance can't sustain many
+concurrent users, which caps how many you can honestly run test #1 at.
+That's a real limit on *that* test, but it says nothing about the
+gateway's own pipeline (auth, rate limiting, cache I/O, routing, breaker
+checks, request logging) independent of model latency - so test that
+separately, against something that isn't slow:
+
+```bash
+uvicorn loadtest.stub_backend:app --port 11500 &   # instant Ollama-contract stub
+# register it as a backend (model: "stub"), then:
+USERS=50 SPAWN=10 DURATION=2m LABEL=gateway_concurrency NO_CACHE=1 \
+  bash loadtest/run.sh
+```
+`NO_CACHE=1` here isn't about the cache - it forces every request through
+the *full* uncached pipeline (rate-limit reserve/reconcile, routing,
+breaker, request-log write), not a cheap L1 short-circuit, so this
+measures the gateway's actual per-request overhead at real concurrency.
 
 ## Setup
 

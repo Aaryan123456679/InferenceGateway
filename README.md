@@ -103,20 +103,49 @@ optimization beyond a length heuristic.
 - `aikit`'s `ModelClient.stream()` contract (`str | Usage`) was live-
   validated against a real Ollama server, including a production-sized
   model (`llama3.1:8b`), before this project was built on top of it.
-- `make load` / `make load-baseline` ([`loadtest/`](loadtest/)): a real
-  A/B load test against a live gateway, real Postgres/Redis, and real
-  Ollama - same 3-concurrent-user traffic mix (exact repeats, paraphrases,
-  unique misses) run twice, once with the cache bypassed (`x-cache:
-  no-store`, a real orchestrator control, not a client-side trick) as the
-  control. Over a 10-minute window: baseline (cache off) served 247
-  requests, p95 **17.0s**, median 4.6s, 0% hit-rate. Cache on served
-  **1,980 requests in the same window** (8x the throughput - cache hits
-  free up capacity for more traffic), p95 **3.5s**, median **67ms**, 91.6%
-  hit-rate. That's a **~79% p95 reduction** and a **~98.5% median
-  reduction** from caching alone, on identical traffic. (Run against
+- **Load testing, two separate questions, two separate tests** — raw CSVs
+  and a script that derives every number below from them (not hand-typed)
+  are committed at [`loadtest/results/`](loadtest/results/); regenerate
+  with `python3 loadtest/summarize.py`.
+
+  **1. Does the cache actually reduce latency?** `make load` /
+  `make load-baseline` run the *same* 3-concurrent-user, 10-minute traffic
+  mix twice against real Postgres/Redis/Ollama - once with the cache
+  bypassed (`x-cache: no-store`, a real orchestrator control, not a
+  client-side trick) as the baseline, once with it live. The mix is 60%
+  exact repeats from a 5-prompt pool, 20% light paraphrases of that same
+  pool, 20% fully-unique misses (`loadtest/locustfile.py`) - i.e. a
+  workload with substantial key overlap by design, because that's what
+  the L1/L2 split is *for*; a workload with no repeated or near-duplicate
+  prompts would show no cache benefit almost by definition, and that's not
+  a hidden caveat, it's the point of the test. Both runs use
   `loadtest-model`, a `qwen2.5:0.5b` derivative with `num_predict` capped
-  at 60 tokens - bounding generation length for reproducible latency
-  samples in a load test, not a change to the production model.)
+  at 60 tokens - **both baseline and cache-on run under this same cap**,
+  so the delta is what's real; the absolute 5-16s baseline latencies are
+  an artifact of a small model on this sandbox's CPU, not a claim about
+  production latency anywhere else.
+
+  | | requests | p95 | median | hit-rate |
+  |---|---|---|---|---|
+  | cache off (baseline) | 262 | 16.0s | 5.0s | 0% |
+  | cache on | 1,695 | 5.3s | 70ms | 88.2% |
+
+  **~67% p95 reduction, ~99% median reduction, 6.5x more requests served
+  in the same window** (cache hits free up capacity for more traffic) -
+  under this specific, disclosed, repeat-heavy workload.
+
+  **2. Was the *gateway* ever tested under real concurrency, or only the
+  cache path?** Fair question - the 3-user ceiling above was Ollama's, not
+  the gateway's, and that distinction needs its own evidence, not just an
+  assertion. `loadtest/stub_backend.py` is a stub Ollama server that
+  answers instantly; pointing the gateway at it isolates the gateway's own
+  pipeline (auth, rate-limit reserve/reconcile, cache read/write, routing,
+  breaker checks, request logging) from real inference latency. At 50
+  concurrent users, `bypass_cache=true` (so every request still does the
+  full non-cached pipeline, not a cheap L1 short-circuit), 2 minutes: the
+  gateway served **13,215 requests, 0 failures, p95 560ms, median 48ms,
+  ~111 req/s**. That's the real concurrency number - the model server was
+  the bottleneck in test 1, not the gateway.
 
 This process found six real bugs, none of them caught by the unit/
 integration test suite alone:
@@ -166,6 +195,18 @@ without real concurrent traffic:
    never printed on exactly the runs where seeing it mattered most. Fixed
    with `|| true` on the locust invocation; the failure detail is already
    visible in locust's own printed table above it.
+9. **The gateway's own DB connection pool, not `per_backend_concurrency`,
+   was the real ceiling.** The very first 50-user run against the instant
+   stub backend (built to *prove* the gateway wasn't the bottleneck)
+   failed 44% of requests on `QueuePool limit of size 5 overflow 10
+   reached` - every request logs to Postgres, and SQLAlchemy's default
+   pool (15 connections total) is far below 50 concurrent in-flight
+   writes. Fixed by exposing `pool_size`/`max_overflow` on `aikit`'s
+   `make_engine()` (defaults unchanged, so existing pinned consumers see
+   no behavior change) and sizing the gateway's own `GatewaySettings` above
+   its expected concurrency. The 13,215-request, 0-failure result above is
+   *after* this fix - the number this project would have reported without
+   digging into the 500s was a worse, and wrong, one.
 
 **Known gaps**:
 - Circuit breaker open→half-open→closed *timing* and L2 paraphrase-
@@ -175,9 +216,11 @@ without real concurrent traffic:
 - `HostedClient` (OpenAI-compatible backends) has no live-Docker
   validation — only aikit's own mock-tested wire-format coverage. No real
   hosted API key was available in this environment.
-- The load test used 3 concurrent users, not the 50 a "real" load test
-  implies - this sandbox's single CPU-only Ollama instance couldn't sustain
-  more (see `loadtest/README.md`'s notes on this). The *relative* cache
-  effect (p95/median/hit-rate) is real and reproducible; the *absolute*
-  throughput ceiling is an artifact of this environment, not the gateway.
+- The cache A/B test itself still used 3 concurrent users, not 50 - real
+  Ollama on this sandbox's CPU couldn't sustain more (bug/fix #7 above was
+  found trying). That ceiling is now *demonstrated* to be the model
+  server's, not the gateway's, by the separate 50-user stub-backend test -
+  but the two tests are still separate runs, not one 50-user run against a
+  real model with the cache live. That combined number is the natural next
+  load test, not yet run.
 - Admin endpoints have no audit log beyond `request_log`'s own rows.
