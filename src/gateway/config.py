@@ -16,3 +16,10 @@ class GatewaySettings(BaseServiceSettings):
     request_timeout_seconds: float = 30.0
     per_backend_concurrency: int = 16
     default_policy: str = "latency"
+    # Sized above SQLAlchemy's own defaults (5/10): every request logs to
+    # Postgres, so the DB pool - not just per_backend_concurrency - bounds
+    # real concurrency. Found via load-testing at 50 concurrent users,
+    # where the default 15-connection ceiling caused ~44% of requests to
+    # fail on QueuePool timeout even against an instant backend.
+    db_pool_size: int = 20
+    db_max_overflow: int = 30
