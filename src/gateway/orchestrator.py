@@ -120,7 +120,12 @@ class RequestOrchestrator:
             )
 
     async def handle_complete(
-        self, *, api_key: ApiKey, model: str, messages: list[ChatMessage]
+        self,
+        *,
+        api_key: ApiKey,
+        model: str,
+        messages: list[ChatMessage],
+        bypass_cache: bool = False,
     ) -> CompletionResult:
         start = time.perf_counter()
         est_tokens = estimate_tokens(messages)
@@ -134,7 +139,15 @@ class RequestOrchestrator:
         p_hash = prompt_hash(model, messages)
         p_text = prompt_text(messages)
 
-        hit = await self._cache.get(model=model, prompt_hash=p_hash, prompt_text=p_text)
+        # bypass_cache (routers.py: `x-cache: no-store` request header) is
+        # a control for A/B load testing - it skips both the read and the
+        # write-back below, so a baseline run neither serves from nor
+        # pollutes the cache with synthetic traffic.
+        hit = (
+            None
+            if bypass_cache
+            else await self._cache.get(model=model, prompt_hash=p_hash, prompt_text=p_text)
+        )
         if hit is not None:
             await self._rate_limiter.reconcile(
                 str(api_key.id), reservation, hit.tokens_in + hit.tokens_out
@@ -185,10 +198,12 @@ class RequestOrchestrator:
             latency_ms = int((time.perf_counter() - start) * 1000)
             await self._breaker.record(str(backend.id), ok=True)
             await self._latency_tracker.record(str(backend.id), latency_ms)
-            await self._cache.put(
-                model=model, prompt_hash=p_hash, prompt_text=p_text, content=completion.content,
-                tokens_in=completion.tokens_in, tokens_out=completion.tokens_out,
-            )
+            if not bypass_cache:
+                await self._cache.put(
+                    model=model, prompt_hash=p_hash, prompt_text=p_text,
+                    content=completion.content,
+                    tokens_in=completion.tokens_in, tokens_out=completion.tokens_out,
+                )
             await self._rate_limiter.reconcile(
                 str(api_key.id), reservation, completion.tokens_in + completion.tokens_out
             )
@@ -222,7 +237,12 @@ class RequestOrchestrator:
         raise AllBackendsUnavailable(last_error)
 
     async def handle_stream(
-        self, *, api_key: ApiKey, model: str, messages: list[ChatMessage]
+        self,
+        *,
+        api_key: ApiKey,
+        model: str,
+        messages: list[ChatMessage],
+        bypass_cache: bool = False,
     ) -> AsyncIterator[str | CompletionResult]:
         """Yields text chunks, then exactly one terminal `CompletionResult`
         (mirroring aikit's own str|Usage stream contract) carrying the
@@ -246,7 +266,11 @@ class RequestOrchestrator:
         p_hash = prompt_hash(model, messages)
         p_text = prompt_text(messages)
 
-        hit = await self._cache.get(model=model, prompt_hash=p_hash, prompt_text=p_text)
+        hit = (
+            None
+            if bypass_cache
+            else await self._cache.get(model=model, prompt_hash=p_hash, prompt_text=p_text)
+        )
         if hit is not None:
             await self._rate_limiter.reconcile(
                 str(api_key.id), reservation, hit.tokens_in + hit.tokens_out
@@ -311,10 +335,11 @@ class RequestOrchestrator:
             latency_ms = int((time.perf_counter() - start) * 1000)
             await self._breaker.record(str(backend.id), ok=True)
             await self._latency_tracker.record(str(backend.id), latency_ms)
-            await self._cache.put(
-                model=model, prompt_hash=p_hash, prompt_text=p_text, content=content,
-                tokens_in=tokens_in, tokens_out=tokens_out,
-            )
+            if not bypass_cache:
+                await self._cache.put(
+                    model=model, prompt_hash=p_hash, prompt_text=p_text, content=content,
+                    tokens_in=tokens_in, tokens_out=tokens_out,
+                )
             await self._rate_limiter.reconcile(
                 str(api_key.id), reservation, tokens_in + tokens_out
             )

@@ -58,19 +58,25 @@ def _to_chat_messages(body: ChatCompletionRequest) -> list[ChatMessage]:
 @router.post("/v1/chat/completions", response_model=None)
 async def chat_completions(
     body: ChatCompletionRequest,
+    request: Request,
     api_key: ApiKey = Depends(require_api_key),
     orchestrator: RequestOrchestrator = Depends(get_orchestrator),
 ) -> ChatCompletionResponse | StreamingResponse:
     messages = _to_chat_messages(body)
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
+    # Load-test control (loadtest/locustfile.py's baseline run): lets an A/B
+    # comparison force real cache misses on the same traffic mix used by the
+    # cache-on run, without a separate deployment or config flag.
+    bypass_cache = request.headers.get("x-cache") == "no-store"
 
     if body.stream:
 
         async def event_stream() -> AsyncIterator[str]:
             try:
                 async for event in orchestrator.handle_stream(
-                    api_key=api_key, model=body.model, messages=messages
+                    api_key=api_key, model=body.model, messages=messages,
+                    bypass_cache=bypass_cache,
                 ):
                     if isinstance(event, str):
                         chunk = ChatCompletionChunk(
@@ -114,7 +120,7 @@ async def chat_completions(
 
     try:
         result = await orchestrator.handle_complete(
-            api_key=api_key, model=body.model, messages=messages
+            api_key=api_key, model=body.model, messages=messages, bypass_cache=bypass_cache
         )
     except RateLimitExceeded as exc:
         raise HTTPException(

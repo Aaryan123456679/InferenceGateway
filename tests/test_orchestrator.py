@@ -247,3 +247,50 @@ async def test_stream_failure_after_yield_does_not_silently_failover(sessionmake
 
     assert received == ["partial "]
     assert backup.calls == [], "must not have tried the backup backend after bytes were sent"
+
+
+async def test_bypass_cache_never_reads_a_hit(sessionmaker, redis):
+    """loadtest/locustfile.py's baseline run relies on this: with
+    bypass_cache=True, a request that would otherwise be an L1 hit must
+    still reach the backend, so an A/B load test's control group measures
+    real backend cost, not a stale assumption that caching is off."""
+    api_key = await _make_api_key(sessionmaker)
+    async with session_scope(sessionmaker) as session:
+        await BackendRepo(session).upsert(
+            name="primary", type=BackendType.OLLAMA, endpoint="e", model="m"
+        )
+    client = FakeModelClient(lambda p: f"echo:{p}")
+    orchestrator, registry = _wire(sessionmaker, redis, {"primary": client})
+    await registry.reload()
+
+    messages = [ChatMessage(role="user", content="hi")]
+    await orchestrator.handle_complete(api_key=api_key, model="m", messages=messages)
+    second = await orchestrator.handle_complete(
+        api_key=api_key, model="m", messages=messages, bypass_cache=True
+    )
+
+    assert second.cache_tier is None
+    assert len(client.calls) == 2, "bypass_cache must force a real backend call, not serve L1"
+
+
+async def test_bypass_cache_never_writes_a_hit_for_later_requests(sessionmaker, redis):
+    """The write-back matters too: a bypassed request must not pollute the
+    cache, or a later cache-on request in the same suite would get an
+    unearned hit from synthetic baseline traffic."""
+    api_key = await _make_api_key(sessionmaker)
+    async with session_scope(sessionmaker) as session:
+        await BackendRepo(session).upsert(
+            name="primary", type=BackendType.OLLAMA, endpoint="e", model="m"
+        )
+    client = FakeModelClient(lambda p: f"echo:{p}")
+    orchestrator, registry = _wire(sessionmaker, redis, {"primary": client})
+    await registry.reload()
+
+    messages = [ChatMessage(role="user", content="hi")]
+    await orchestrator.handle_complete(
+        api_key=api_key, model="m", messages=messages, bypass_cache=True
+    )
+    second = await orchestrator.handle_complete(api_key=api_key, model="m", messages=messages)
+
+    assert second.cache_tier is None
+    assert len(client.calls) == 2, "the bypassed request must not have written to the cache"
