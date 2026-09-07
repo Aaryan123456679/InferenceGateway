@@ -31,6 +31,7 @@ dev = [
     "aiosqlite>=0.20",
     "ruff>=0.5",
     "mypy>=1.10",
+    "locust>=2.31",
 ]
 
 [tool.hatch.metadata]
