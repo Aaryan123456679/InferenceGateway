@@ -1,0 +1,35 @@
+{
+  "cache_ab_test": {
+    "description": "same 3-concurrent-user, 10-minute traffic mix run twice against loadtest-model (qwen2.5:0.5b, num_predict=60) - once with x-cache: no-store (baseline), once with the cache live",
+    "baseline": {
+      "requests": 262,
+      "failures": 0,
+      "median_ms": 5000.0,
+      "p95_ms": 16000.0,
+      "p99_ms": 19000.0,
+      "requests_per_s": 0.44
+    },
+    "cache_on": {
+      "requests": 1695,
+      "failures": 1,
+      "median_ms": 70.0,
+      "p95_ms": 5300.0,
+      "p99_ms": 9300.0,
+      "requests_per_s": 2.83
+    },
+    "p95_reduction_pct": 66.9,
+    "median_reduction_pct": 98.6,
+    "throughput_multiple": 6.47
+  },
+  "gateway_concurrency_test": {
+    "description": "50 concurrent users, 2 minutes, bypass_cache=true, against loadtest/stub_backend.py (an instant Ollama-contract stub) - isolates the gateway's own pipeline from real model inference latency",
+    "result": {
+      "requests": 13215,
+      "failures": 0,
+      "median_ms": 48.0,
+      "p95_ms": 560.0,
+      "p99_ms": 630.0,
+      "requests_per_s": 110.86
+    }
+  }
+}
