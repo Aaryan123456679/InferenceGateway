@@ -82,15 +82,17 @@ optimization beyond a length heuristic.
 ## Status
 
 **Verified**, not just written:
-- 43 tests against real Postgres+pgvector and real Redis (fakeredis has no
+- 45 tests against real Postgres+pgvector and real Redis (fakeredis has no
   EVAL/EVALSHA support - the breaker and rate limiter are both Lua-
   scripted and need the real thing): routing policies, cache tiers (L1
   short-circuit, L2 threshold boundary and model namespacing via a
   `FakeEmbeddingService` with pinned vectors), circuit breaker state
   transitions, rate limiter reserve/deny/reconcile/window-rollover,
-  backend registry hot-reload, and full-pipeline orchestrator tests
-  (happy path, cache hit, 429, failover, all-backends-down, breaker trip,
-  and the streaming partial-output-must-not-silently-failover guarantee).
+  backend registry hot-reload, full-pipeline orchestrator tests (happy
+  path, cache hit, 429, failover, all-backends-down, breaker trip, the
+  streaming partial-output-must-not-silently-failover guarantee), and the
+  `bypass_cache` load-test control (a bypassed request must neither read
+  nor write either tier).
 - `make smoke`: a full cold `docker compose up --build`, Alembic migration,
   a real Ollama model pull, and against real infrastructure - a real
   non-streaming chat completion, a repeat request confirmed served from
@@ -101,6 +103,20 @@ optimization beyond a length heuristic.
 - `aikit`'s `ModelClient.stream()` contract (`str | Usage`) was live-
   validated against a real Ollama server, including a production-sized
   model (`llama3.1:8b`), before this project was built on top of it.
+- `make load` / `make load-baseline` ([`loadtest/`](loadtest/)): a real
+  A/B load test against a live gateway, real Postgres/Redis, and real
+  Ollama - same 3-concurrent-user traffic mix (exact repeats, paraphrases,
+  unique misses) run twice, once with the cache bypassed (`x-cache:
+  no-store`, a real orchestrator control, not a client-side trick) as the
+  control. Over a 10-minute window: baseline (cache off) served 247
+  requests, p95 **17.0s**, median 4.6s, 0% hit-rate. Cache on served
+  **1,980 requests in the same window** (8x the throughput - cache hits
+  free up capacity for more traffic), p95 **3.5s**, median **67ms**, 91.6%
+  hit-rate. That's a **~79% p95 reduction** and a **~98.5% median
+  reduction** from caching alone, on identical traffic. (Run against
+  `loadtest-model`, a `qwen2.5:0.5b` derivative with `num_predict` capped
+  at 60 tokens - bounding generation length for reproducible latency
+  samples in a load test, not a change to the production model.)
 
 This process found six real bugs, none of them caught by the unit/
 integration test suite alone:
@@ -128,6 +144,29 @@ integration test suite alone:
 6. The base image had no `git`, which pip needs to clone the
    `aikit @ git+...` direct dependency.
 
+The load test itself (added after the above) found two more, neither of
+them caught by the unit/integration suite because neither is reachable
+without real concurrent traffic:
+
+7. **`aikit`'s embedding service crashed the whole process under
+   concurrency.** `SentenceTransformerEmbeddingService` let `torch`
+   auto-select a device, which picked MPS (Apple Silicon GPU) on this
+   machine; calling `encode()` from multiple concurrent asyncio executor
+   threads - exactly what happens with several in-flight requests each
+   needing an L2 embedding - crashed the process outright rather than
+   raising a catchable exception (1,980 requests reduced to instant
+   `ConnectionRefusedError`s once it died). Fixed in `aikit` by passing
+   `device="cpu"` explicitly: no interface change, so existing pinned
+   consumers are unaffected, and CPU is the right choice for this
+   workload's shape anyway (many small, latency-sensitive, single-item
+   calls, not the large batches GPU dispatch overhead pays for).
+8. **`loadtest/run.sh` hid its own report on any failure.** `set -e` plus
+   locust's non-zero exit on even one failed request (out of hundreds)
+   meant the summary block - the actual point of the script - silently
+   never printed on exactly the runs where seeing it mattered most. Fixed
+   with `|| true` on the locust invocation; the failure detail is already
+   visible in locust's own printed table above it.
+
 **Known gaps**:
 - Circuit breaker open→half-open→closed *timing* and L2 paraphrase-
   similarity are proven by the (stronger, deterministic) test suite, not
@@ -136,7 +175,9 @@ integration test suite alone:
 - `HostedClient` (OpenAI-compatible backends) has no live-Docker
   validation — only aikit's own mock-tested wire-format coverage. No real
   hosted API key was available in this environment.
-- No load/concurrency testing beyond the breaker's unit-level race
-  assertion — replica-level behavior under many simultaneous requests is
-  unmeasured.
+- The load test used 3 concurrent users, not the 50 a "real" load test
+  implies - this sandbox's single CPU-only Ollama instance couldn't sustain
+  more (see `loadtest/README.md`'s notes on this). The *relative* cache
+  effect (p95/median/hit-rate) is real and reproducible; the *absolute*
+  throughput ceiling is an artifact of this environment, not the gateway.
 - Admin endpoints have no audit log beyond `request_log`'s own rows.
