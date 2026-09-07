@@ -1,5 +1,7 @@
 # inference-gateway
 
+*Part of the [AI Infrastructure Suite](https://github.com/Aaryan123456679/ai-infrastructure-suite) — one of three services built on the shared `aikit` library.*
+
 OpenAI-compatible proxy over N backends: two-tier semantic caching, policy
 routing, per-backend circuit breakers, token-budget rate limiting. Full
 design in [`HLD+LLD.md`](HLD+LLD.md).
